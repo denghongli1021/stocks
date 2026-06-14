@@ -48,7 +48,8 @@ def build_lstm(input_shape) -> Sequential:
         Dense(16, activation="relu"),
         Dense(1),
     ])
-    model.compile(optimizer=Adam(config.LEARNING_RATE), loss="mse", metrics=["mae"])
+    # Huber loss 對極端報酬日較穩健(不會被少數大漲大跌過度影響)
+    model.compile(optimizer=Adam(config.LEARNING_RATE), loss="huber", metrics=["mae"])
     return model
 
 
@@ -84,25 +85,27 @@ class StockModel:
     # ---------- 訓練 ----------
     def fit(self, df: pd.DataFrame, epochs: int = config.EPOCHS,
             batch_size: int = config.BATCH_SIZE, extra_callbacks=None, verbose: int = 1):
-        """df 為原始 OHLCV。特徵工程 -> 依時間切分 -> 縮放 -> 建序列 -> 訓練 -> 算測試指標。"""
+        """df 為原始 OHLCV。特徵工程 -> 三段切分 -> 縮放 -> 建序列 -> 訓練 -> 算測試指標。"""
         feat = add_indicators(df)
-        split = int(len(feat) * config.TRAIN_RATIO)
+        n = len(feat)
+        train_end = int(n * config.TRAIN_RATIO)   # 訓練段結束
+        test_start = _test_start(n)               # 測試段開始(中間為驗證段)
 
         close = feat["Close"].values
         # 目標 = 當日 log 報酬(= log(close_t / close_{t-1}));feat["Return"] 已是此值
         target = feat["Return"].values
 
         # scaler 只用「訓練段」fit,避免資訊洩漏(look-ahead bias)
-        self.feature_scaler.fit(feat[config.FEATURES].iloc[:split])
-        self.target_scaler.fit(target[:split].reshape(-1, 1))
+        self.feature_scaler.fit(feat[config.FEATURES].iloc[:train_end])
+        self.target_scaler.fit(target[:train_end].reshape(-1, 1))
 
         scaled_x = self.feature_scaler.transform(feat[config.FEATURES])
         scaled_y = self.target_scaler.transform(target.reshape(-1, 1)).ravel()
 
         X, y, idx = create_sequences(scaled_x, scaled_y, self.lookback)
-        is_test = idx >= split
-        X_train, y_train = X[~is_test], y[~is_test]
-        X_test, y_test = X[is_test], y[is_test]
+        train_mask = idx < train_end
+        val_mask = (idx >= train_end) & (idx < test_start)
+        test_mask = idx >= test_start
 
         self.model = build_lstm((self.lookback, len(config.FEATURES)))
         callbacks = [EarlyStopping(monitor="val_loss", patience=config.PATIENCE,
@@ -110,18 +113,19 @@ class StockModel:
         if extra_callbacks:
             callbacks += extra_callbacks
 
+        # 早停看「驗證集」,完全不碰測試集 → 測試指標才是誠實的樣本外表現
         hist = self.model.fit(
-            X_train, y_train,
-            validation_data=(X_test, y_test),
+            X[train_mask], y[train_mask],
+            validation_data=(X[val_mask], y[val_mask]),
             epochs=epochs, batch_size=batch_size,
             callbacks=callbacks, verbose=verbose,
         )
         self.history = {k: [float(v) for v in vals] for k, vals in hist.history.items()}
 
         # 把測試集的「報酬預測」還原成價格:price_t = close_{t-1} * exp(pred_return_t)
-        test_idx = idx[is_test]
+        test_idx = idx[test_mask]
         pred_ret = self.target_scaler.inverse_transform(
-            self.model.predict(X_test, verbose=0)).ravel()
+            self.model.predict(X[test_mask], verbose=0)).ravel()
         prev_close = close[test_idx - 1]
         self.test_pred = prev_close * np.exp(pred_ret)
         self.test_true = close[test_idx]
@@ -139,7 +143,11 @@ class StockModel:
         """
         work = df.copy()
         preds, dates = [], []
-        last_volume = float(work["Volume"].iloc[-1])
+        # 未來不知道盤中高低與成交量,用近 20 日的平均高低振幅與均量近似,
+        # 讓 ATR / 振幅 / 量能等特徵在遞迴預測時仍落在合理範圍。
+        recent = work.tail(20)
+        half_range = float(((recent["High"] - recent["Low"]) / recent["Close"]).mean()) / 2
+        avg_volume = float(recent["Volume"].mean())
 
         for _ in range(days):
             feat = add_indicators(work)
@@ -154,8 +162,11 @@ class StockModel:
             dates.append(next_date)
 
             work.loc[next_date] = {
-                "Open": pred_close, "High": pred_close, "Low": pred_close,
-                "Close": pred_close, "Volume": last_volume,
+                "Open": last_close,
+                "High": pred_close * (1 + half_range),
+                "Low": pred_close * (1 - half_range),
+                "Close": pred_close,
+                "Volume": avg_volume,
             }
 
         return pd.DataFrame({"PredictedClose": preds}, index=pd.DatetimeIndex(dates, name="Date"))
@@ -167,7 +178,7 @@ class StockModel:
         only_test=True 時只取「測試段(樣本外)」,與訓練時的切分一致,供回測使用。
         """
         feat = add_indicators(df)
-        split = int(len(feat) * config.TRAIN_RATIO)
+        test_start = _test_start(len(feat))
         close = feat["Close"].values
 
         scaled_x = self.feature_scaler.transform(feat[config.FEATURES])
@@ -185,7 +196,7 @@ class StockModel:
             index=feat.index[idx],
         )
         if only_test:
-            out = out[idx >= split]
+            out = out[idx >= test_start]
         return out
 
     # ---------- 存 / 讀 ----------
@@ -231,6 +242,11 @@ class StockModel:
     def exists(ticker: str = config.TICKER, model_dir: str = config.MODEL_DIR) -> bool:
         tag = ticker.replace(".", "_")
         return os.path.exists(os.path.join(model_dir, f"{tag}.keras"))
+
+
+def _test_start(n: int) -> int:
+    """測試段(樣本外)起始索引 = 訓練段 + 驗證段之後。"""
+    return int(n * (config.TRAIN_RATIO + config.VAL_RATIO))
 
 
 def _next_business_day(date) -> pd.Timestamp:

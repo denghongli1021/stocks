@@ -15,7 +15,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 import config
-from src.features import add_indicators
+from src.features import build_dataset
 
 import tensorflow as tf
 from tensorflow.keras import Sequential
@@ -74,6 +74,7 @@ class StockModel:
     feature_scaler: StandardScaler = field(default_factory=StandardScaler)
     target_scaler: StandardScaler = field(default_factory=StandardScaler)
     model: Sequential | None = None
+    features: list = field(default_factory=lambda: list(config.FEATURES))  # 此模型實際用到的特徵
 
     # 訓練後保留的測試結果(供畫圖)
     test_dates: pd.DatetimeIndex | None = None
@@ -85,8 +86,8 @@ class StockModel:
     # ---------- 訓練 ----------
     def fit(self, df: pd.DataFrame, epochs: int = config.EPOCHS,
             batch_size: int = config.BATCH_SIZE, extra_callbacks=None, verbose: int = 1):
-        """df 為原始 OHLCV。特徵工程 -> 三段切分 -> 縮放 -> 建序列 -> 訓練 -> 算測試指標。"""
-        feat = add_indicators(df)
+        """df 為原始 OHLCV。特徵工程(技術+法人)-> 三段切分 -> 縮放 -> 建序列 -> 訓練 -> 測試指標。"""
+        feat, self.features = build_dataset(df, self.ticker)
         n = len(feat)
         train_end = int(n * config.TRAIN_RATIO)   # 訓練段結束
         test_start = _test_start(n)               # 測試段開始(中間為驗證段)
@@ -96,10 +97,10 @@ class StockModel:
         target = feat["Return"].values
 
         # scaler 只用「訓練段」fit,避免資訊洩漏(look-ahead bias)
-        self.feature_scaler.fit(feat[config.FEATURES].iloc[:train_end])
+        self.feature_scaler.fit(feat[self.features].iloc[:train_end])
         self.target_scaler.fit(target[:train_end].reshape(-1, 1))
 
-        scaled_x = self.feature_scaler.transform(feat[config.FEATURES])
+        scaled_x = self.feature_scaler.transform(feat[self.features])
         scaled_y = self.target_scaler.transform(target.reshape(-1, 1)).ravel()
 
         X, y, idx = create_sequences(scaled_x, scaled_y, self.lookback)
@@ -107,7 +108,7 @@ class StockModel:
         val_mask = (idx >= train_end) & (idx < test_start)
         test_mask = idx >= test_start
 
-        self.model = build_lstm((self.lookback, len(config.FEATURES)))
+        self.model = build_lstm((self.lookback, len(self.features)))
         callbacks = [EarlyStopping(monitor="val_loss", patience=config.PATIENCE,
                                    restore_best_weights=True)]
         if extra_callbacks:
@@ -150,8 +151,9 @@ class StockModel:
         avg_volume = float(recent["Volume"].mean())
 
         for _ in range(days):
-            feat = add_indicators(work)
-            window = self.feature_scaler.transform(feat[config.FEATURES].iloc[-self.lookback:])
+            feat, _ = build_dataset(work, self.ticker)
+            feat = self._select_features(feat)
+            window = self.feature_scaler.transform(feat.iloc[-self.lookback:])
             pred_ret = float(self.target_scaler.inverse_transform(
                 self.model.predict(window[np.newaxis, ...], verbose=0))[0, 0])
 
@@ -177,11 +179,11 @@ class StockModel:
         prev_close(前一日收盤)、pred_close(模型預測收盤)、actual_close(實際收盤)。
         only_test=True 時只取「測試段(樣本外)」,與訓練時的切分一致,供回測使用。
         """
-        feat = add_indicators(df)
+        feat, _ = build_dataset(df, self.ticker)
         test_start = _test_start(len(feat))
         close = feat["Close"].values
 
-        scaled_x = self.feature_scaler.transform(feat[config.FEATURES])
+        scaled_x = self.feature_scaler.transform(self._select_features(feat))
         X, _dummy, idx = create_sequences(scaled_x, close, self.lookback)
         pred_ret = self.target_scaler.inverse_transform(
             self.model.predict(X, verbose=0)).ravel()
@@ -199,6 +201,14 @@ class StockModel:
             out = out[idx >= test_start]
         return out
 
+    def _select_features(self, feat: pd.DataFrame) -> pd.DataFrame:
+        """取出本模型訓練時用到的特徵欄位;若某欄缺失(例如法人資料臨時抓不到)以 0 補,
+        確保特徵數與訓練時一致,推論不會因此失敗(法人特徵=0 即視為中性)。"""
+        for col in self.features:
+            if col not in feat.columns:
+                feat[col] = 0.0
+        return feat[self.features]
+
     # ---------- 存 / 讀 ----------
     def save(self, model_dir: str = config.MODEL_DIR):
         os.makedirs(model_dir, exist_ok=True)
@@ -208,6 +218,7 @@ class StockModel:
             {
                 "ticker": self.ticker,
                 "lookback": self.lookback,
+                "features": self.features,
                 "feature_scaler": self.feature_scaler,
                 "target_scaler": self.target_scaler,
                 "metrics": self.metrics,
@@ -227,6 +238,7 @@ class StockModel:
         obj = cls(
             ticker=meta["ticker"],
             lookback=meta["lookback"],
+            features=meta.get("features", list(config.FEATURES)),
             feature_scaler=meta["feature_scaler"],
             target_scaler=meta["target_scaler"],
         )

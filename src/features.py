@@ -8,6 +8,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+import config
+from src.institutional import INST_FEATURES, institutional_features
+
 
 def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     """相對強弱指標 RSI(0~100)。> 70 偏超買、< 30 偏超賣。"""
@@ -72,3 +75,24 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["VolRatio"] = volume / volume.rolling(20).mean() - 1  # 相對 20 日均量
 
     return out.replace([np.inf, -np.inf], np.nan).dropna()
+
+
+def build_dataset(df: pd.DataFrame, ticker: str, force_refresh: bool = False):
+    """整合「技術特徵 + 三大法人特徵」,回傳 (特徵 DataFrame, 特徵欄位清單)。
+
+    - 技術特徵:一律加入(config.FEATURES,16 個)。
+    - 法人特徵:僅台股且抓得到時加入(INST_FEATURES,4 個);抓不到就只用技術特徵。
+    每檔股票可能有不同特徵數,模型會記住自己用了哪些(self.features)。
+    """
+    feat = add_indicators(df)
+    features = list(config.FEATURES)
+
+    if config.USE_INSTITUTIONAL:
+        inst = institutional_features(df, ticker, force_refresh=force_refresh)
+        if inst is not None:
+            feat = feat.join(inst.reindex(feat.index))
+            # 法人沒資料的日子(或早期)以 0 補(代表「中性」,沒有明顯買超賣超)
+            feat[INST_FEATURES] = feat[INST_FEATURES].fillna(0.0)
+            features += INST_FEATURES
+
+    return feat, features

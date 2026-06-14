@@ -1,0 +1,10 @@
+# 雲端部署用(Streamlit Community Cloud)。tensorflow-cpu 比完整版輕,且與本機相容。
+# 釘住 2.18 以確保能載入用該版本存的 .keras 模型。
+yfinance>=0.2
+pandas>=2.0
+numpy>=1.26
+scikit-learn>=1.5
+tensorflow-cpu~=2.18.0
+streamlit>=1.36
+plotly>=5.0
+joblib>=1.3

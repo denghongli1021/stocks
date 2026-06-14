@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.streamlit/secrets.toml
+
+# 股價快取(雲端會自動重抓,不需上傳)
+data/
+
+# 注意:models/ 不忽略 —— 預先訓練好的模型要一起部署,網站才能秒出預測

@@ -1,0 +1,7 @@
+[theme]
+base = "light"
+primaryColor = "#d62728"
+
+[server]
+# 上傳資料大小上限(MB);抓股價不需要太大
+maxUploadSize = 50

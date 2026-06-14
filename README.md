@@ -110,15 +110,25 @@ stocks/
 
 2. **到 [share.streamlit.io](https://share.streamlit.io)** 用 GitHub 登入 → **New app**:
    - Repository:選你剛推的 repo
-   - Branch:`main`
+   - Branch:你的分支(`main` 或 `master`)
    - Main file path:`app.py`
-   - **Advanced settings → Python version 選 3.12**(TensorFlow 2.18 需要 3.9~3.12)
+   - ⚠️ **務必展開 Advanced settings → Python version 選 `3.12`**
+     (TensorFlow **只支援到 3.12**;預設常是最新的 3.13/3.14,沒有 TF 安裝檔會直接 build 失敗)
 
 3. 按 **Deploy**,等套件安裝(TensorFlow 較大,首次約數分鐘),完成後會得到一個
    `https://<你的app>.streamlit.app` 的公開網址,手機也能開。
 
 > 💡 免費方案資源有限(~1GB RAM)。本專案模型小、6 檔已預訓練,通常可順利運行;
 > 若資源吃緊,可在 `views/predict.py` 把預設 `period` 改短一點。
+
+### 🛠 部署疑難排解
+
+**`No matching distribution found for tensorflow-cpu`**(或 `No solution found when resolving dependencies`)
+→ 代表雲端用了 **Python 3.13/3.14**,TensorFlow 還沒有對應安裝檔。**改用 Python 3.12**:
+
+- 既有 App:右下角 **Manage app → ⋮ → Settings → Python version 改 3.12 → Reboot**;
+  若設定頁沒有版本選項,就 **Delete app 後重新 Deploy**,在 Advanced settings 選 3.12。
+- 重新部署前確認本 repo 的 `requirements.txt` 已是收緊版本(本專案已設定好)。
 
 ---
 

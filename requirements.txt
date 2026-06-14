@@ -1,11 +1,12 @@
-# 雲端部署用(Streamlit Community Cloud)。tensorflow-cpu 比完整版輕,且與本機相容。
-# 釘住 2.18 以確保能載入用該版本存的 .keras 模型。
+# 部署請務必在 Streamlit Cloud 的 Advanced settings 選 Python 3.12
+# (TensorFlow 只支援到 3.12;3.13/3.14 沒有安裝檔,會 build 失敗)。
+# 版本範圍刻意收緊,避免雲端抓到過新的 pandas 3.x / numpy 2.4 等不相容版本。
 yfinance>=0.2
 requests>=2.28
-pandas>=2.0
-numpy>=1.26
-scikit-learn>=1.5
-tensorflow-cpu~=2.18.0
+pandas>=2.0,<3.0
+numpy>=1.26,<2.3
+scikit-learn>=1.4,<1.8
+tensorflow-cpu>=2.18,<2.19
 streamlit>=1.36
 plotly>=5.0
 joblib>=1.3
